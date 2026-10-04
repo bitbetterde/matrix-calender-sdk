@@ -46,6 +46,95 @@ fn localtime(t: &EventTime) -> chrono::NaiveDateTime {
     }
 }
 
+#[test]
+fn autumn_overlap_preserves_stored_start_and_exact_duration() {
+    // Both occurrences of 02:30 local are valid; UTC disambiguates them. Check both
+    // an ambiguous start and an ambiguous end (including identical wall-clock times).
+    for (start, end) in [
+        ("2026-10-25T01:30:00Z", "2026-10-25T02:30:00Z"),
+        ("2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z"),
+        ("2026-10-24T23:30:00Z", "2026-10-25T01:30:00Z"),
+    ] {
+        for count in [1, 3] {
+            let ev = event(
+                "Across the autumn overlap",
+                EventTime::from_utc(utc(start), Berlin),
+                EventTime::from_utc(utc(end), Berlin),
+                Some(RRule {
+                    count: Some(count),
+                    ..RRule::new(Frequency::Daily)
+                }),
+            );
+            ev.validate().unwrap();
+            let opts = range("2026-10-24T00:00:00Z", "2026-10-29T00:00:00Z");
+            let occurrences = expand(&ev, &[], &opts).unwrap();
+            assert_eq!(occurrences.len(), count as usize, "{start} to {end}");
+            assert_eq!(occurrences[0].start, ev.start);
+            assert_eq!(occurrences[0].end, ev.end);
+            assert_eq!(occurrences[0].recurrence_id, Some(utc(start)));
+            let duration = utc(end) - utc(start);
+            for occurrence in &occurrences {
+                assert_eq!(
+                    occurrence.end_utc(Berlin) - occurrence.start_utc(Berlin),
+                    duration
+                );
+                assert_eq!(
+                    localtime(&occurrence.start).time(),
+                    localtime(&ev.start).time()
+                );
+            }
+            let next =
+                next_occurrence(&ev, &[], utc(start) - chrono::TimeDelta::seconds(1), Berlin)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(next.start, ev.start);
+            assert_eq!(next.end, ev.end);
+            assert_eq!(
+                to_rrule_set(&ev)
+                    .unwrap()
+                    .get_dt_start()
+                    .with_timezone(&Utc),
+                utc(start)
+            );
+        }
+    }
+}
+
+#[test]
+fn later_autumn_start_uses_stored_instant_for_exdates_and_overrides() {
+    let mut ev = event(
+        "Later 02:30",
+        EventTime::from_utc(utc("2026-10-25T01:30:00Z"), Berlin),
+        EventTime::from_utc(utc("2026-10-25T02:30:00Z"), Berlin),
+        Some(RRule {
+            count: Some(2),
+            ..RRule::new(Frequency::Daily)
+        }),
+    );
+    let opts = range("2026-10-25T00:00:00Z", "2026-10-28T00:00:00Z");
+    let mut moved = ev.clone();
+    moved.recurrence = None;
+    moved.recurrence_id = Some(utc("2026-10-25T01:30:00Z"));
+    moved.start = EventTime::from_utc(utc("2026-10-25T03:00:00Z"), Berlin);
+    moved.end = EventTime::from_utc(utc("2026-10-25T04:00:00Z"), Berlin);
+    let occurrences = expand(&ev, [&moved], &opts).unwrap();
+    assert_eq!(occurrences.len(), 2);
+    assert!(occurrences[0].is_override);
+    assert_eq!(occurrences[0].start, moved.start);
+
+    ev.recurrence
+        .as_mut()
+        .unwrap()
+        .exdates
+        .push(utc("2026-10-25T01:30:00Z"));
+    let occurrences = expand(&ev, &[], &opts).unwrap();
+    assert_eq!(occurrences.len(), 1);
+    assert_eq!(
+        occurrences[0].start_utc(Berlin),
+        utc("2026-10-26T01:30:00Z")
+    );
+}
+
 /// The MSC example: weekly on Monday, 09:00-09:30 Europe/Berlin, from Wednesday 2026-07-01
 /// until 2026-12-31. The Wednesday start is the first instance (RFC 8984 §4.3.3).
 fn msc_standup() -> CalendarEvent {

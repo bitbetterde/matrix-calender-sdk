@@ -284,7 +284,8 @@ struct KeyState {
 /// - Redacted events, and events redacted later by an `m.room.redaction` fed into the index,
 ///   are dropped. Redacting an invite also drops the RSVPs that reference it. Events that fail
 ///   to deserialize are skipped with a warning.
-/// - Every event ID is applied at most once.
+/// - Every unredacted event ID is applied at most once. A redacted representation also
+///   removes any previously indexed or buffered copy of the event.
 #[derive(Clone, Debug, Default)]
 pub struct SchedulingIndex {
     by_key: BTreeMap<EventKey, KeyState>,
@@ -345,10 +346,11 @@ impl SchedulingIndex {
     /// Applies a raw timeline event (from sync, pagination, or a decrypted event).
     ///
     /// Returns `Ok(true)` if the index changed (including an RSVP being buffered until its
-    /// invite arrives). Events that are not calendar invites, RSVPs or redactions, events that
-    /// have already been applied, redacted events, invites from someone other than their
-    /// organiser and malformed events are ignored (the latter two with a warning) and yield
-    /// `Ok(false)`; malformed input is never an error.
+    /// invite arrives, or buffered events being removed). Redacted representations remove
+    /// any previously indexed or buffered copy before duplicate detection. Events that are
+    /// not calendar invites, RSVPs or redactions, ordinary duplicates, invites from someone
+    /// other than their organiser and malformed events are ignored (the latter two with a
+    /// warning) and yield `Ok(false)`; malformed input is never an error.
     pub fn apply_raw_sync(&mut self, raw: &Raw<AnySyncTimelineEvent>) -> Result<bool> {
         let ev: RawEvent = match raw.deserialize_as_unchecked() {
             Ok(ev) => ev,
@@ -389,6 +391,13 @@ impl SchedulingIndex {
             );
             return false;
         };
+        // A refreshed or paginated copy can reveal a redaction after the original was
+        // indexed. It must remove the original before ordinary duplicate detection.
+        // Redaction events themselves still apply to their target, even if redacted.
+        if !is_redaction && ev.is_redacted() {
+            debug!(%event_id, "dropping redacted scheduling event");
+            return self.remove_event(event_id);
+        }
         if self.seen.contains(&event_id) {
             return false;
         }
@@ -401,14 +410,6 @@ impl SchedulingIndex {
                 }
                 None => false,
             };
-        }
-
-        if ev.is_redacted() {
-            debug!(%event_id, "dropping redacted scheduling event");
-            self.seen.insert(event_id.clone());
-            // RSVPs buffered for a redacted invite will never resolve.
-            self.pending.remove(&event_id);
-            return false;
         }
 
         let (Some(sender), Some(ts)) = (ev.sender.clone(), ev.origin_server_ts.or(fallback_ts))
@@ -554,14 +555,13 @@ impl SchedulingIndex {
     }
 
     /// Removes the invite or response `target` (after a redaction), together with the RSVPs
-    /// referencing a removed invite. Returns whether anything visible was removed.
+    /// referencing a removed invite. Returns whether anything indexed or buffered was removed.
     fn remove_event(&mut self, target: OwnedEventId) -> bool {
         // Remember the target so that it is dropped if it is only seen later (backward
         // pagination delivers the redaction before the redacted event).
         self.seen.insert(target.clone());
         // RSVPs buffered for the target (if it is an invite) will never resolve.
-        self.pending.remove(&target);
-        let mut removed = false;
+        let mut removed = self.pending.remove(&target).is_some_and(|v| !v.is_empty());
         if let Some(key) = self.invite_keys.remove(&target)
             && let Some(state) = self.by_key.get_mut(&key)
         {
@@ -575,7 +575,9 @@ impl SchedulingIndex {
             removed |= state.responses.len() != before;
         }
         for responses in self.pending.values_mut() {
+            let before = responses.len();
             responses.retain(|r| r.event_id != target);
+            removed |= responses.len() != before;
         }
         self.pending.retain(|_, v| !v.is_empty());
         self.by_key

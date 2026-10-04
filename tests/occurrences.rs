@@ -153,6 +153,89 @@ fn summary(occurrences: &[CalendarOccurrence], tz: Tz) -> Vec<(String, String, S
 }
 
 #[test]
+fn all_day_override_revisions_resolve_after_normalizing_instance_keys() {
+    // The same day can be encoded as midnight UTC or midnight in the viewer's timezone.
+    // Resolve revisions by event timestamp (then event ID), regardless of encoding or
+    // ingestion order, and use the same winner for expansion, next-occurrence and busy.
+    for tz in [Berlin, chrono_tz::America::New_York] {
+        let utc_rid = utc("2026-01-08T00:00:00Z");
+        let local_rid = EventTime::all_day("2026-01-08".parse().unwrap()).to_utc(tz);
+        for (old_rid, new_rid) in [(utc_rid, local_rid), (local_rid, utc_rid)] {
+            for (old_ts, new_ts) in [(100, 200), (100, 100)] {
+                for cancelled in [false, true] {
+                    for backwards in [false, true] {
+                        let mut master = all_day("series", "Series", alice(), "2026-01-01");
+                        master.recurrence = Some(Recurrence::new(RRule {
+                            count: Some(3),
+                            ..RRule::new(Frequency::Weekly)
+                        }));
+                        let mut older = all_day("series", "Older override", alice(), "2026-01-08");
+                        older.recurrence_id = Some(old_rid);
+                        let mut newer = all_day("series", "Newer override", alice(), "2026-01-09");
+                        newer.recurrence_id = Some(new_rid);
+                        if cancelled {
+                            newer.status = Status::Cancelled;
+                        }
+                        older.validate_override().unwrap();
+                        newer.validate_override().unwrap();
+                        let mut events = vec![
+                            original(alice(), event_id!("$series"), 1, master),
+                            override_event(
+                                alice(),
+                                event_id!("$a-old"),
+                                old_ts,
+                                event_id!("$series"),
+                                older,
+                            ),
+                            override_event(
+                                alice(),
+                                event_id!("$z-new"),
+                                new_ts,
+                                event_id!("$series"),
+                                newer.clone(),
+                            ),
+                        ];
+                        if backwards {
+                            events.reverse();
+                        }
+                        let mut index = CalendarIndex::new();
+                        for event in events {
+                            index.apply_raw_sync(&event).unwrap();
+                        }
+                        let start = utc("2026-01-07T00:00:00Z");
+                        let end = utc("2026-01-11T00:00:00Z");
+                        let occurrences = index.occurrences(start, end, tz).unwrap();
+                        let busy = index.busy(start, end, tz, true).unwrap();
+                        let next = index.next_occurrence(start, tz).unwrap().unwrap();
+                        if cancelled {
+                            assert!(occurrences.is_empty());
+                            assert!(busy.is_empty());
+                            assert_eq!(
+                                next.occurrence.start.local_date(),
+                                "2026-01-15".parse::<chrono::NaiveDate>().unwrap()
+                            );
+                            assert_eq!(next.override_event_id, None);
+                        } else {
+                            assert_eq!(occurrences.len(), 1);
+                            assert_eq!(occurrences[0].occurrence.event, newer);
+                            assert_eq!(
+                                occurrences[0].override_event_id.as_deref(),
+                                Some(event_id!("$z-new"))
+                            );
+                            assert_eq!(next, occurrences[0]);
+                            assert_eq!(busy.len(), 1);
+                            assert_eq!(busy[0].start, newer.start.to_utc(tz));
+                            assert_eq!(busy[0].end, newer.end.to_utc(tz));
+                            assert_eq!(busy[0].title.as_deref(), Some("Newer override"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn occurrences_expand_series_apply_overrides_and_skip_cancelled() {
     let index = sample_index(alice());
     assert_eq!(index.len(), 6);

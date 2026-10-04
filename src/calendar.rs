@@ -1330,7 +1330,13 @@ impl CalendarOccurrence {
 
 /// The effective contents of the overrides of `entry`.
 fn override_contents(entry: &IndexedEvent) -> impl Iterator<Item = &CalendarEvent> {
-    entry.overrides.iter().map(|o| &o.content)
+    // Expansion normalizes all-day recurrence IDs using the query's fallback timezone.
+    // Different encodings may then identify the same day; expansion keeps the last
+    // override, so feed it revisions in precedence order rather than raw-ID order.
+    let mut overrides: Vec<_> = entry.overrides.iter().collect();
+    overrides
+        .sort_by(|a, b| (a.origin_server_ts, &a.event_id).cmp(&(b.origin_server_ts, &b.event_id)));
+    overrides.into_iter().map(|o| &o.content)
 }
 
 /// A calendar event that is not an edit: a plain original or an override.

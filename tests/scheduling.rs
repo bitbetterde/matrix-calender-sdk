@@ -97,6 +97,141 @@ fn rsvp_event(
         .into_raw_sync()
 }
 
+fn redacted_snapshot(raw: &Raw<AnySyncTimelineEvent>) -> Raw<AnySyncTimelineEvent> {
+    let mut value: Value = serde_json::from_str(raw.json().get()).unwrap();
+    value["content"] = json!({});
+    value["unsigned"] = json!({"redacted_because": {"type": "m.room.redaction", "content": {}}});
+    Raw::new(&value).unwrap().cast_unchecked()
+}
+
+#[test]
+fn redacted_invite_snapshot_removes_invite_and_dependent_responses() {
+    let f = EventFactory::new().room(dm_room());
+    for stable in [false, true] {
+        for backwards in [false, true] {
+            let mut inv = invite_event(
+                &f,
+                event_id!("$inv"),
+                alice(),
+                1,
+                invite(0, InviteMethod::Request),
+            );
+            if stable {
+                inv = to_stable(inv);
+            }
+            let response = rsvp_event(
+                &f,
+                event_id!("$rsvp"),
+                bob(),
+                2,
+                event_id!("$inv"),
+                CalendarRsvp::new(UID, 0, PartStat::Accepted),
+            );
+            let redacted = redacted_snapshot(&inv);
+            let mut index = SchedulingIndex::new();
+            if backwards {
+                assert!(!index.apply_raw_sync(&redacted).unwrap());
+                assert!(!index.apply_raw_sync(&response).unwrap());
+                assert!(!index.apply_raw_sync(&inv).unwrap());
+            } else {
+                assert!(index.apply_raw_sync(&inv).unwrap());
+                assert!(index.apply_raw_sync(&response).unwrap());
+                assert!(
+                    index
+                        .apply_timeline_event(&TimelineEvent::from_plaintext(redacted.clone()))
+                        .unwrap()
+                );
+            }
+            assert!(index.latest_invite(&key()).is_none());
+            assert!(index.invites(&key()).is_empty());
+            assert!(index.responses(&key()).is_empty());
+            assert!(index.attendees(&key()).is_empty());
+            assert_eq!(index.keys().count(), 0);
+            assert_eq!(index.unresolved_responses(), 0);
+            assert!(!index.apply_raw_sync(&redacted).unwrap());
+            assert!(!index.apply_raw_sync(&inv).unwrap());
+        }
+    }
+}
+
+#[test]
+fn redacted_rsvp_snapshot_reverts_to_previous_attendee_status() {
+    let f = EventFactory::new().room(dm_room());
+    for stable in [false, true] {
+        let mut index = SchedulingIndex::new();
+        index
+            .apply_raw_sync(&invite_event(
+                &f,
+                event_id!("$inv"),
+                alice(),
+                1,
+                invite(0, InviteMethod::Request),
+            ))
+            .unwrap();
+        index
+            .apply_raw_sync(&rsvp_event(
+                &f,
+                event_id!("$old"),
+                bob(),
+                2,
+                event_id!("$inv"),
+                CalendarRsvp::new(UID, 0, PartStat::Accepted),
+            ))
+            .unwrap();
+        let mut response = rsvp_event(
+            &f,
+            event_id!("$new"),
+            bob(),
+            3,
+            event_id!("$inv"),
+            CalendarRsvp::new(UID, 0, PartStat::Declined),
+        );
+        if stable {
+            response = to_stable(response);
+        }
+        index.apply_raw_sync(&response).unwrap();
+        assert_eq!(index.attendees(&key())[0].partstat, PartStat::Declined);
+        let redacted = redacted_snapshot(&response);
+        assert!(index.apply_raw_sync(&redacted).unwrap());
+        assert_eq!(index.responses(&key()).len(), 1);
+        assert_eq!(index.attendees(&key())[0].partstat, PartStat::Accepted);
+        assert!(!index.apply_raw_sync(&redacted).unwrap());
+        assert!(!index.apply_raw_sync(&response).unwrap());
+    }
+}
+
+#[test]
+fn redacted_snapshots_remove_buffered_scheduling_events() {
+    let f = EventFactory::new().room(dm_room());
+    let inv = invite_event(
+        &f,
+        event_id!("$inv"),
+        alice(),
+        1,
+        invite(0, InviteMethod::Request),
+    );
+    let response = rsvp_event(
+        &f,
+        event_id!("$rsvp"),
+        bob(),
+        2,
+        event_id!("$inv"),
+        CalendarRsvp::new(UID, 0, PartStat::Accepted),
+    );
+    for redact_invite in [false, true] {
+        let mut index = SchedulingIndex::new();
+        index.apply_raw_sync(&response).unwrap();
+        assert_eq!(index.unresolved_responses(), 1);
+        let redacted = redacted_snapshot(if redact_invite { &inv } else { &response });
+        assert!(index.apply_raw_sync(&redacted).unwrap());
+        assert_eq!(index.unresolved_responses(), 0);
+        assert!(!index.apply_raw_sync(&redacted).unwrap());
+        assert_eq!(index.apply_raw_sync(&inv).unwrap(), !redact_invite);
+        assert!(index.attendees(&key()).is_empty());
+        assert!(!index.apply_raw_sync(&response).unwrap());
+    }
+}
+
 /// Rewrites an event built with the unstable identifiers to the stable ones.
 fn to_stable(raw: Raw<AnySyncTimelineEvent>) -> Raw<AnySyncTimelineEvent> {
     let mut v: Value = serde_json::from_str(raw.json().get()).unwrap();

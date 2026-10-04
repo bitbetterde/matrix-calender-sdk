@@ -1,20 +1,20 @@
 # matrix-calendar-sdk
 
-A Rust SDK for federated calendars over Matrix, implementing
+A lightweight Rust SDK for federated calendars over Matrix, implementing
 [MSC4496](https://github.com/matrix-org/matrix-spec-proposals/pull/4496)
 ("Calendar Events, Invites, and Availability in Matrix") on top of
 [matrix-sdk](https://crates.io/crates/matrix-sdk).
 
 MSC4496 maps calendaring onto Matrix as follows:
 
-| Concept             | Matrix representation                                               |
-| ------------------- | ------------------------------------------------------------------- |
-| Calendar            | Room with room type `m.calendar` (unstable: `org.matrix.msc4496.calendar`) |
-| Calendar metadata   | State event `m.calendar.info` (colour, home timezone)               |
-| Calendar event      | Timeline event `m.calendar.event`, edited via `m.replace`           |
-| Recurrence          | Structured RRULE JSON on the event, overrides via `m.calendar.override` relation |
-| Invite / RSVP       | Timeline events `m.calendar.invite` and `m.calendar.rsvp` in any shared room |
-| Availability        | State events for policy and working hours, plus a query endpoint    |
+| Concept           | Matrix representation                                                            |
+| ----------------- | -------------------------------------------------------------------------------- |
+| Calendar          | Room with room type `m.calendar` (unstable: `org.matrix.msc4496.calendar`)       |
+| Calendar metadata | State event `m.calendar.info` (colour, home timezone)                            |
+| Calendar event    | Timeline event `m.calendar.event`, edited via `m.replace`                        |
+| Recurrence        | Structured RRULE JSON on the event, overrides via `m.calendar.override` relation |
+| Invite / RSVP     | Timeline events `m.calendar.invite` and `m.calendar.rsvp` in any shared room     |
+| Availability      | State events for policy and working hours, plus a query endpoint                 |
 
 Sharing a calendar between two users is therefore just inviting the other user to the
 calendar room, and accepting a shared calendar is joining it. Federation, membership, power
@@ -55,10 +55,10 @@ proposal text this crate implements.
 MSC4496 leaves access control to the room ("room ACLs govern access"). The SDK maps three
 roles onto Matrix power levels, so the **homeserver** enforces them, for every client:
 
-| Role     | Power level | May                                                                                   |
-| -------- | ----------- | ------------------------------------------------------------------------------------- |
-| `Reader` | 0           | read the calendar, RSVP (configurable), react                                          |
-| `Editor` | 50          | also create calendar events, and edit or cancel **their own** events                   |
+| Role     | Power level | May                                                                                                             |
+| -------- | ----------- | --------------------------------------------------------------------------------------------------------------- |
+| `Reader` | 0           | read the calendar, RSVP (configurable), react                                                                   |
+| `Editor` | 50          | also create calendar events, and edit or cancel **their own** events                                            |
 | `Owner`  | 100         | also change calendar info and availability, invite and remove members, change roles, redact other users' events |
 
 Sharing read-only or read-write is one call; the role is set before the invite is sent:
@@ -117,11 +117,11 @@ Caveats:
 - **Editors can only edit their own events.** Matrix only accepts `m.replace` edits from the
   original sender, so nobody, not even an owner, can change another user's event. Owners can
   redact (delete) other users' events.
-- **Behaviour change:** members without an explicit role are now **readers** (least privilege).
-  Previously every member of a calendar created by the SDK could write. Invite writers as
+- **Members without an explicit role are readers** (least privilege). Invite writers as
   editors (`invite_editor`, `CreateCalendarOptions::members`), or set
-  `CreateCalendarOptions::permissions` to `CalendarPermissions::new(CalendarRole::Editor)`.
-  Existing calendars keep their power levels until `apply_permissions` is called.
+  `CreateCalendarOptions::permissions` to `CalendarPermissions::new(CalendarRole::Editor)` to
+  make every member an editor by default. Calendars created by other clients keep their power
+  levels until `apply_permissions` is called.
 - In encrypted calendars the server only sees `m.room.encrypted`, so readers cannot send RSVPs
   into the calendar room there (they can RSVP in a DM).
 - In room version 12 and later, room creators have unlimited power: they are always owners and
@@ -129,8 +129,9 @@ Caveats:
 
 ## Status
 
-Early development. The MSC itself is a draft with no accepted implementations yet, and
-the availability query endpoints need homeserver support that does not exist today.
+Very early development. Use at your own risk. The MSC itself is a draft with no accepted
+implementations yet, and the availability query endpoints need homeserver support that does
+not exist today.
 
 ## Building
 
@@ -145,17 +146,17 @@ cargo clippy --all-targets -- -D warnings
 `tests/e2e.rs` runs the SDK against a real homeserver: calendar creation and discovery,
 sharing, accepting and declining invitations and leaving a calendar, edits and cancellation,
 overrides, redactions, the live index, encrypted calendars, event invites and RSVPs, spoofing
-attempts, availability, events sent with the stable identifiers,
-and pagination of a large calendar. Without `MATRIX_E2E_HOMESERVER` every test prints
-"skipped" and passes, so a plain `cargo test` needs no server.
+attempts, availability, events sent with the stable identifiers, and pagination of a large
+calendar. Without `MATRIX_E2E_HOMESERVER` every test prints "skipped" and passes, so a plain
+`cargo test` needs no server.
 
 They need a homeserver reachable over plain HTTP with password login and three existing users,
 `alice`, `bob` and `mallory`, ideally with rate limits lifted. Each test logs in new devices,
 creates its own uniquely named rooms, and leaves those rooms and logs out at the end, so the
 tests can run in parallel and repeatedly against the same server.
 
-| Variable                     | Meaning                                                    | Default         |
-| ---------------------------- | ---------------------------------------------------------- | --------------- |
+| Variable                     | Meaning                                                     | Default         |
+| ---------------------------- | ----------------------------------------------------------- | --------------- |
 | `MATRIX_E2E_HOMESERVER`      | Homeserver base URL (used directly, no discovery); required | –               |
 | `MATRIX_E2E_PASSWORD_PREFIX` | The password of user `X` is this prefix followed by `X`     | `calendar-e2e-` |
 
@@ -165,6 +166,13 @@ MATRIX_E2E_HOMESERVER=http://matrix.ess.localhost cargo test --test e2e -- --noc
 scripts/e2e.sh                     # all tests
 scripts/e2e.sh encrypted_calendar  # one test
 ```
+
+## LLM disclaimer
+
+This project was created with a lot of help from LLM agents (namely Claude Opus 5.5). However,
+it was not "vibecoded" or "one-shotted". Most of the code was manually reviewed, and I roughly
+know what I'm doing, even without an LLM. All communication in the repo will be handled by
+humans.
 
 ## License
 

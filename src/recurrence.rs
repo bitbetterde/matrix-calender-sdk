@@ -6,8 +6,8 @@
 //!
 //! # Semantics
 //!
-//! - **Timezone-aware.** Timed series expand with `DTSTART` set to the master's `localtime` in
-//!   its named IANA `timezone`, never in UTC (MSC4496 "Potential issues"), so a 09:00
+//! - **Timezone-aware.** Timed series expand with `DTSTART` in the master's named IANA
+//!   `timezone`, preserving its stored UTC instant to disambiguate a DST overlap, so a 09:00
 //!   `Europe/Berlin` weekly meeting stays at 09:00 local time across DST changes and its UTC
 //!   start moves by an hour.
 //! - **All-day series** expand on dates; their occurrences are [`EventTime::AllDay`]. Range
@@ -282,7 +282,7 @@ pub fn next_occurrence<'a>(
 /// Converts the recurrence of `master` (rule, `exdates` and `rdates`) into an
 /// [`rrule::RRuleSet`].
 ///
-/// Timed series use the master's `localtime` in its named timezone as `DTSTART`. All-day
+/// Timed series use the master's stored UTC instant in its named timezone as `DTSTART`. All-day
 /// series are expressed as midnight-UTC date-times standing for floating dates; all-day
 /// exdates/rdates are mapped to dates with UTC as the fallback timezone. If `DTSTART` does not
 /// match the rule it is added as an `RDATE` (and `COUNT` reduced by one), since it is always
@@ -489,23 +489,23 @@ impl Series {
         let (dt_start, frame) = match (&master.start, &master.end) {
             (
                 EventTime::Timed {
-                    localtime,
+                    utc: start_utc,
                     timezone,
                     ..
                 },
                 EventTime::Timed {
-                    localtime: end_local,
+                    utc: end_utc,
                     timezone: end_tz,
                     ..
                 },
             ) => {
-                let start_utc = resolve_local_lenient(*localtime, *timezone);
-                let end_utc = resolve_local_lenient(*end_local, *end_tz);
+                // The stored instants disambiguate a DST overlap. Resolving the local
+                // times again would move a later-fold start and change the duration.
                 let frame = Frame::Timed {
                     tz: *timezone,
                     end_tz: *end_tz,
                     exact: end_utc
-                        .signed_duration_since(start_utc)
+                        .signed_duration_since(*start_utc)
                         .max(TimeDelta::zero()),
                 };
                 (start_utc.with_timezone(&rrule::Tz::Tz(*timezone)), frame)
