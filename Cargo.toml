@@ -1,0 +1,30 @@
+[package]
+name = "matrix-calendar-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "Calendar SDK for Matrix implementing MSC4496 on top of matrix-sdk"
+license = "Apache-2.0"
+
+[dependencies]
+matrix-sdk = { version = "0.19.1", default-features = false, features = ["e2e-encryption", "automatic-room-key-forwarding", "bundled-sqlite", "rustls-aws-lc-rs"] }
+ruma = { version = "0.17", features = ["unstable-msc1767", "unstable-msc3488"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10", features = ["serde"] }
+rrule = "0.14"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+matrix-sdk = { version = "0.19.1", default-features = false, features = ["testing"] }
+matrix-sdk-test = "0.19"
+wiremock = "0.6"
+assert_matches2 = "0.1"
+
+[lints.rust]
+# ruma's `EventContent` derive emits `cfg(ruma_unstable_exhaustive_types)` into this crate.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ruma_unstable_exhaustive_types)'] }
