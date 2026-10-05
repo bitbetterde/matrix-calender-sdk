@@ -5,8 +5,8 @@ use chrono_tz::{America::New_York, Europe::Berlin, Tz};
 use matrix_calendar_sdk::{
     Error,
     events::{
-        ByDay, CalendarEvent, EventTime, Frequency, RRule, Recurrence, Status, Until, Weekday,
-        datetime::parse_utc,
+        Alert, AlertTrigger, ByDay, CalendarEvent, EventTime, Frequency, RRule, Recurrence, Status,
+        Until, Weekday, datetime::parse_utc,
     },
     recurrence::{ExpandOptions, Occurrence, expand, next_occurrence, to_rrule_set},
 };
@@ -432,6 +432,118 @@ fn overrides_replace_and_cancel_instances() {
         ),
         Err(Error::InvalidRecurrence(_))
     ));
+}
+
+#[test]
+fn alert_times_follow_the_instance_and_the_override() {
+    // Daily 09:00–09:30 Berlin from 2026-10-23, across the fall-back on 2026-10-25.
+    let mut master = event(
+        "Standup",
+        timed("2026-10-23T09:00:00", Berlin),
+        timed("2026-10-23T09:30:00", Berlin),
+        Some(RRule {
+            count: Some(4),
+            ..RRule::new(Frequency::Daily)
+        }),
+    );
+    master.alerts.insert(
+        "early".into(),
+        Alert::new(AlertTrigger::offset("-PT15M".parse().unwrap())),
+    );
+    master.validate().unwrap();
+
+    // The 2026-10-25 instance is moved to the afternoon and has its own alerts.
+    let mut moved = master.clone();
+    moved.recurrence = None;
+    moved.recurrence_id = Some(utc("2026-10-25T08:00:00Z"));
+    moved.start = timed("2026-10-25T14:00:00", Berlin);
+    moved.end = timed("2026-10-25T15:00:00", Berlin);
+    moved.alerts.clear();
+    moved.alerts.insert(
+        "after".into(),
+        Alert::new(AlertTrigger::offset_from_end("PT5M".parse().unwrap())),
+    );
+    moved.alerts.insert(
+        "zz-absolute".into(),
+        Alert::new(AlertTrigger::absolute(utc("2026-10-25T06:00:00Z"))),
+    );
+    moved.validate_override().unwrap();
+
+    let occ = expand(
+        &master,
+        [&moved],
+        &range("2026-10-23T00:00:00Z", "2026-10-27T00:00:00Z"),
+    )
+    .unwrap();
+    assert_eq!(
+        starts(&occ),
+        [
+            utc("2026-10-23T07:00:00Z"),
+            utc("2026-10-24T07:00:00Z"),
+            utc("2026-10-25T13:00:00Z"),
+            utc("2026-10-26T08:00:00Z"),
+        ]
+    );
+    // The series' alert, 15 minutes before each instance's own start (CEST, then CET).
+    assert_eq!(
+        occ[0].alert_times(Berlin),
+        [("early", utc("2026-10-23T06:45:00Z"))]
+    );
+    assert_eq!(
+        occ[3].alert_times(Berlin),
+        [("early", utc("2026-10-26T07:45:00Z"))]
+    );
+    // The override's alerts win, ordered by alert ID, and resolve against its times.
+    assert!(occ[2].is_override);
+    assert_eq!(
+        occ[2].alert_times(Berlin),
+        [
+            ("after", utc("2026-10-25T14:05:00Z")),
+            ("zz-absolute", utc("2026-10-25T06:00:00Z")),
+        ]
+    );
+
+    // An event without alerts has no fire times.
+    let plain = event(
+        "No reminders",
+        timed("2026-10-23T09:00:00", Berlin),
+        timed("2026-10-23T09:30:00", Berlin),
+        None,
+    );
+    let occ = expand(
+        &plain,
+        &[],
+        &range("2026-10-23T00:00:00Z", "2026-10-24T00:00:00Z"),
+    )
+    .unwrap();
+    assert!(occ[0].alert_times(Berlin).is_empty());
+
+    // All-day instances resolve against midnight in the fallback timezone: 15 hours before
+    // midnight Berlin on 2026-10-05 is 09:00 Berlin on the day before.
+    let mut holiday = event(
+        "Long weekend",
+        EventTime::all_day(date("2026-10-05")),
+        EventTime::all_day(date("2026-10-07")),
+        Some(RRule::new(Frequency::Yearly)),
+    );
+    holiday.alerts.insert(
+        "evening-before".into(),
+        Alert::new(AlertTrigger::offset("-PT15H".parse().unwrap())),
+    );
+    let occ = expand(
+        &holiday,
+        &[],
+        &range("2026-10-01T00:00:00Z", "2026-10-10T00:00:00Z"),
+    )
+    .unwrap();
+    assert_eq!(
+        occ[0].alert_times(Berlin),
+        [("evening-before", utc("2026-10-04T07:00:00Z"))]
+    );
+    assert_eq!(
+        occ[0].alert_times(Tz::UTC),
+        [("evening-before", utc("2026-10-04T09:00:00Z"))]
+    );
 }
 
 #[test]

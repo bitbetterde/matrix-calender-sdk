@@ -47,6 +47,8 @@
 //!   `start < range_end && end > range_start`. Zero-duration occurrences are returned when
 //!   `range_start <= start < range_end` (as in CalDAV time-range queries, RFC 4791 §9.9).
 //!   Results are ordered by UTC start, then by `recurrence_id`.
+//! - **Alerts** come from the instance's effective event, so an override's alerts replace the
+//!   series' ones; [`Occurrence::alert_times`] resolves them against the instance's times.
 //! - **Cancelled masters** are still expanded; check [`CalendarEvent::is_cancelled`] on
 //!   [`Occurrence::event`] to filter them.
 //! - **Safety caps.** [`ExpandOptions::limit`] caps the number of returned occurrences, and at
@@ -116,6 +118,27 @@ impl Occurrence {
     /// The UTC end of this instance; all-day dates resolve to midnight in `fallback_tz`.
     pub fn end_utc(&self, fallback_tz: Tz) -> DateTime<Utc> {
         self.end.to_utc(fallback_tz)
+    }
+
+    /// When the alerts of this instance fire, as `(alert id, fire time)` pairs ordered by
+    /// alert ID.
+    ///
+    /// The alerts are those of [`Occurrence::event`] (so an override's own alerts replace the
+    /// series' ones) applied to this instance's `start` and `end`; see
+    /// [`Alert::fire_time`](crate::events::Alert::fire_time) for how `fallback_tz` is used.
+    /// Alerts in the past are returned as well; it is up to the
+    /// caller to filter and schedule them.
+    pub fn alert_times(&self, fallback_tz: Tz) -> Vec<(&str, DateTime<Utc>)> {
+        self.event
+            .alerts
+            .iter()
+            .map(|(id, alert)| {
+                (
+                    id.as_str(),
+                    alert.fire_time(&self.start, &self.end, fallback_tz),
+                )
+            })
+            .collect()
     }
 }
 

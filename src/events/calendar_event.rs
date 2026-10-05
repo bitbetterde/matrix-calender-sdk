@@ -1,5 +1,7 @@
 //! The `calendar_event` message-like event (MSC4496 §2).
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use matrix_sdk::ruma::{
     OwnedEventId, OwnedUserId,
@@ -9,6 +11,7 @@ use matrix_sdk::ruma::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeMap};
 
 use super::{
+    alert::Alert,
     conference::Conference,
     datetime::{EventTime, utc_serde},
     location::Location,
@@ -318,6 +321,14 @@ pub struct CalendarEvent {
     /// Optional recurrence. Serialized as `null` when absent.
     #[serde(default)]
     pub recurrence: Option<Recurrence>,
+    /// Alerts (reminders) by alert ID, as in RFC 8984 §4.5.2.
+    ///
+    /// Not part of the MSC text (see the [`alert`](super::alert) module). Empty by default and
+    /// omitted from the JSON when empty, so events without alerts look exactly as the MSC
+    /// describes them. Alerts are part of the event content and therefore shared by everyone in
+    /// the calendar room; an override replaces the master's alerts with its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub alerts: BTreeMap<String, Alert>,
     /// For instance overrides: the original UTC start of the overridden occurrence.
     #[serde(
         default,
@@ -352,8 +363,18 @@ impl CalendarEvent {
             location: None,
             conference: None,
             recurrence: None,
+            alerts: BTreeMap::new(),
             recurrence_id: None,
         }
+    }
+
+    /// Adds `alert` under a fresh UUID v4 alert ID and returns that ID.
+    ///
+    /// Alert IDs are opaque strings; keep the returned one to change or remove the alert later.
+    pub fn add_alert(&mut self, alert: Alert) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.alerts.insert(id.clone(), alert);
+        id
     }
 
     /// Whether this event recurs.
@@ -377,7 +398,8 @@ impl CalendarEvent {
     /// - `start` and `end` are both timed or both all-day, matching `all_day`,
     /// - timed values have consistent `utc`/`localtime`,
     /// - `end` is after `start` (all-day: at least one day later, as `end` is exclusive),
-    /// - the recurrence rule, if any, is valid.
+    /// - the recurrence rule, if any, is valid,
+    /// - no alert ID is empty.
     pub fn validate(&self) -> Result<()> {
         if self.uid.is_empty() {
             return Err(Error::InvalidIdentifier("empty uid".into()));
@@ -419,6 +441,10 @@ impl CalendarEvent {
         if let Some(r) = &self.recurrence {
             r.rrule.validate()?;
         }
+        if self.alerts.contains_key("") {
+            return Err(Error::InvalidIdentifier("empty alert id".into()));
+        }
+        // An alert relative to the end is always resolvable: `end` is not optional.
         Ok(())
     }
 
@@ -449,7 +475,9 @@ mod tests {
 
     use super::*;
     use crate::events::{
+        alert::{AlertAction, AlertTrigger},
         datetime::parse_utc,
+        duration::SignedDuration,
         recurrence::{ByDay, Frequency, RRule, Until, Weekday},
     };
 
@@ -755,6 +783,82 @@ mod tests {
     }
 
     #[test]
+    fn alerts_round_trip_and_are_omitted_when_empty() {
+        // No alerts: the wire format is exactly the MSC's.
+        let without = standup();
+        assert!(without.alerts.is_empty());
+        let v = serde_json::to_value(CalendarEventEventContent::new(without.clone())).unwrap();
+        assert!(
+            v["org.matrix.msc4496.calendar_event"]
+                .get("alerts")
+                .is_none()
+        );
+
+        let mut ev = without;
+        ev.alerts.insert(
+            "fifteen-minutes".into(),
+            Alert::new(AlertTrigger::offset("-PT15M".parse().unwrap())),
+        );
+        ev.alerts.insert(
+            "mail-the-day-before".into(),
+            Alert::new(AlertTrigger::absolute(
+                parse_utc("2026-06-30T06:00:00Z").unwrap(),
+            ))
+            .with_action(AlertAction::Email),
+        );
+        ev.validate().unwrap();
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(
+            v["alerts"],
+            json!({
+                "fifteen-minutes": {
+                    "@type": "Alert",
+                    "trigger": {
+                        "@type": "OffsetTrigger",
+                        "offset": "-PT15M",
+                        "relativeTo": "start"
+                    },
+                    "action": "display"
+                },
+                "mail-the-day-before": {
+                    "@type": "Alert",
+                    "trigger": { "@type": "AbsoluteTrigger", "when": "2026-06-30T06:00:00Z" },
+                    "action": "email"
+                }
+            })
+        );
+        let back: CalendarEvent = serde_json::from_value(v).unwrap();
+        assert_eq!(back, ev);
+
+        // Alerts written by another client, without the `@type`s and actions.
+        let lean: CalendarEvent = serde_json::from_value(json!({
+            "uid": "u1",
+            "title": "Christmas",
+            "start": { "date": "2026-12-25" },
+            "end":   { "date": "2026-12-26" },
+            "all_day": true,
+            "alerts": {
+                "a": { "trigger": { "@type": "OffsetTrigger", "offset": "-PT15H" } }
+            }
+        }))
+        .unwrap();
+        lean.validate().unwrap();
+        assert_eq!(
+            lean.alerts["a"],
+            Alert::new(AlertTrigger::offset("-PT15H".parse().unwrap()))
+        );
+
+        // And the fresh-ID helper.
+        let mut ev = standup();
+        let id = ev.add_alert(Alert::new(AlertTrigger::offset(SignedDuration::ZERO)));
+        assert_eq!(ev.alerts.len(), 1);
+        assert_eq!(
+            ev.alerts[&id],
+            Alert::new(AlertTrigger::offset(SignedDuration::ZERO))
+        );
+    }
+
+    #[test]
     fn validate_catches_inconsistencies() {
         let mut ev = standup();
         std::mem::swap(&mut ev.start, &mut ev.end);
@@ -767,5 +871,12 @@ mod tests {
         let mut ev = standup();
         ev.end = EventTime::all_day("2026-07-02".parse().unwrap());
         assert!(ev.validate().is_err());
+
+        let mut ev = standup();
+        ev.alerts.insert(
+            String::new(),
+            Alert::new(AlertTrigger::offset(SignedDuration::ZERO)),
+        );
+        assert!(matches!(ev.validate(), Err(Error::InvalidIdentifier(_))));
     }
 }

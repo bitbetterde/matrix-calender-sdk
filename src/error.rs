@@ -31,6 +31,12 @@ pub enum Error {
     #[error("invalid recurrence rule: {0}")]
     InvalidRecurrence(String),
 
+    /// A duration is not a valid ISO 8601 signed duration (see
+    /// [`SignedDuration`](crate::events::SignedDuration)) or does not fit into the supported
+    /// range.
+    #[error("invalid duration: {0}")]
+    InvalidDuration(String),
+
     /// JSON (de)serialization failed.
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

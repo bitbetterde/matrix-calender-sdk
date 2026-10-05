@@ -78,17 +78,20 @@ macro_rules! string_enum {
     };
 }
 
+pub mod alert;
 pub mod availability;
 pub mod calendar_event;
 pub mod calendar_info;
 pub mod conference;
 pub mod datetime;
+pub mod duration;
 pub mod invite;
 pub mod location;
 pub mod recurrence;
 pub mod rsvp;
 pub mod text;
 
+pub use alert::{ALERT_TYPE, Alert, AlertAction, AlertRelativeTo, AlertTrigger};
 pub use availability::{
     AvailabilityPolicyEventContent, AvailabilityRequest, AvailabilityResponse,
     AvailabilityWindowEventContent, BusyInterval, BusyType, Grant, TIER_BUSY, TIER_NONE,
@@ -101,6 +104,7 @@ pub use calendar_event::{
 pub use calendar_info::{CalendarInfo, CalendarInfoEventContent, is_valid_color};
 pub use conference::Conference;
 pub use datetime::EventTime;
+pub use duration::SignedDuration;
 pub use invite::{CalendarInvite, CalendarInviteEventContent, InviteEventSummary, InviteMethod};
 pub use location::{Location, LocationType};
 pub use recurrence::{ByDay, Frequency, RRule, Recurrence, Until, Weekday};

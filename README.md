@@ -32,7 +32,7 @@ unstable identifiers when reading.
 ## Crate layout
 
 - `events` – typed, serde-backed content types for every event in the MSC, round-tripping
-  the MSC's JSON examples.
+  the MSC's JSON examples, plus [alerts](#alerts-reminders).
 - `recurrence` – timezone-aware expansion of recurring events into concrete occurrences,
   honouring exdates, rdates, and overrides. The series start is always the first occurrence
   (RFC 8984) and instances keep the exact duration of the original (RFC 5545).
@@ -49,6 +49,39 @@ unstable identifiers when reading.
 
 See `docs/DESIGN.md` for the architecture and `docs/MSC4496-matrix-caldav.md` for the
 proposal text this crate implements.
+
+## Alerts (reminders)
+
+MSC4496 has no reminder concept, but declares alignment with JSCalendar, so a calendar event
+carries alerts as RFC 8984 §4.5.2 defines them. This is an extension of the SDK, not part of the
+MSC text:
+
+```json
+"alerts": {
+  "9eb0c4de-6a1f-4f3a-9e1f-0b7d2c5e8a10": {
+    "@type": "Alert",
+    "trigger": { "@type": "OffsetTrigger", "offset": "-PT15M", "relativeTo": "start" },
+    "action": "display"
+  },
+  "bf3bb9a2-1c42-4b3e-8f9c-5d6e7a8b9c01": {
+    "@type": "Alert",
+    "trigger": { "@type": "AbsoluteTrigger", "when": "2026-10-04T08:45:00Z" },
+    "action": "email"
+  }
+}
+```
+
+The key is an opaque alert ID, the `offset` is an ISO 8601 signed duration (RFC 8984 §1.4.6,
+negative for "before"), `relativeTo` is `start` (the default) or `end`, and `action` is
+`display` (the default) or `email`. The field is omitted when there are no alerts, so events
+without reminders look exactly as the MSC describes them.
+
+Alerts are part of the event content, so everyone in the calendar room sees the same ones, like
+event-level reminders on a shared Google or Apple calendar; per-user reminders are not part of
+this. `Alert::fire_time` and `Occurrence::alert_times` compute when an alert is due for a
+concrete occurrence — for all-day events relative to midnight of the date in the fallback
+(calendar) timezone, and an override's alerts replace the series' ones. Showing or sending the
+notifications is up to the client.
 
 ## Permissions
 
